@@ -10,6 +10,7 @@
 #include <iostream>
 #include "input_path.hpp"
 #include "utils.hpp"
+#include "files.hpp"
 
 #if QUICKBOOK_WIDE_PATHS || QUICKBOOK_WIDE_STREAMS
 #include <boost/scoped_ptr.hpp>
@@ -50,8 +51,9 @@ namespace detail {
             return std::string(buffer.get());
         }
 
-        std::wstring from_utf8(std::string const& x)
+        std::wstring from_utf8(boost::string_ref text)
         {
+            std::string x(text.begin(), text.end());
             int buffer_count = MultiByteToWideChar(CP_UTF8, 0, x.c_str(), -1, 0, 0); 
         
             if (!buffer_count)
@@ -80,7 +82,7 @@ namespace detail {
 #endif
 
 #if QUICKBOOK_WIDE_PATHS
-    fs::path generic_to_path(std::string const& x)
+    fs::path generic_to_path(boost::string_ref x)
     {
         return fs::path(from_utf8(x));
     }
@@ -90,9 +92,9 @@ namespace detail {
         return to_utf8(x.generic_wstring());
     }
 #else
-    fs::path generic_to_path(std::string const& x)
+    fs::path generic_to_path(boost::string_ref x)
     {
-        return fs::path(x);
+        return fs::path(x.begin(), x.end());
     }
 
     std::string path_to_generic(fs::path const& x)
@@ -112,16 +114,16 @@ namespace detail {
         if (size < 0)
             throw conversion_error("Error converting cygwin path to windows.");
 
-        // TODO: size is in bytes.
-        boost::scoped_array<wchar_t> result(new wchar_t[size]);
+        boost::scoped_array<char> result(new char[size]);
+        void* ptr = result.get();
 
-        if(cygwin_conv_path(flags, path.c_str(), result.get(), size))
+        if(cygwin_conv_path(flags, path.c_str(), ptr, size))
             throw conversion_error("Error converting cygwin path to windows.");
 
-        return fs::path(result.get());
+        return fs::path(static_cast<wchar_t*>(ptr));
     }
     
-    stream_string path_to_stream(fs::path const& path)
+    ostream::string path_to_stream(fs::path const& path)
     {
         cygwin_conv_path_t flags = CCP_WIN_W_TO_POSIX | CCP_RELATIVE;
 
@@ -144,12 +146,12 @@ namespace detail {
     }
 
 #if QUICKBOOK_WIDE_PATHS && !QUICKBOOK_WIDE_STREAMS
-    stream_string path_to_stream(fs::path const& path)
+    ostream::string path_to_stream(fs::path const& path)
     {
         return path.string();
     }
 #else
-    stream_string path_to_stream(fs::path const& path)
+    ostream::string path_to_stream(fs::path const& path)
     {
         return path.native();
     }
@@ -165,21 +167,23 @@ namespace detail {
         if (_isatty(_fileno(stderr))) _setmode(_fileno(stderr), _O_U16TEXT);
     }
 
-    void write_utf8(ostream& out, std::string const& x)
+    void write_utf8(ostream::base_ostream& out, boost::string_ref x)
     {
         out << from_utf8(x);
     }
 
     ostream& out()
     {
-        return std::wcout;
+        static ostream x(std::wcout);
+        return x;
     }
 
     namespace
     {
         inline ostream& error_stream()
         {
-            return std::wcerr;
+            static ostream x(std::wcerr);
+            return x;
         }
     }
 
@@ -189,21 +193,23 @@ namespace detail {
     {
     }
 
-    void write_utf8(ostream& out, std::string const& x)
+    void write_utf8(ostream::base_ostream& out, boost::string_ref x)
     {
         out << x;
     }
 
     ostream& out()
     {
-        return std::cout;
+        static ostream x(std::cout);
+        return x;
     }
 
     namespace
     {
         inline ostream& error_stream()
         {
-            return std::clog;
+            static ostream x(std::clog);
+            return x;
         }
     }
 
@@ -229,6 +235,11 @@ namespace detail {
         }
     }
 
+    ostream& outerr(file_ptr const& f, string_iterator pos)
+    {
+        return outerr(f->path, f->position_of(pos).line);
+    }
+
     ostream& outwarn(fs::path const& file, int line)
     {
         if (line >= 0)
@@ -242,5 +253,72 @@ namespace detail {
         {
             return error_stream() << path_to_stream(file) << ": warning: ";
         }
+    }
+
+    ostream& outwarn(file_ptr const& f, string_iterator pos)
+    {
+        return outwarn(f->path, f->position_of(pos).line);
+    }
+
+    ostream& ostream::operator<<(char c) {
+        assert(c > 0 && c <= 127);
+        base << c;
+        return *this;
+    }
+
+    inline bool check_ascii(char const* x) {
+        for(;*x;++x) if(*x <= 0 || *x > 127) return false;
+        return true;
+    }
+
+    ostream& ostream::operator<<(char const* x) {
+        assert(check_ascii(x));
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(std::string const& x) {
+        write_utf8(base, x);
+        return *this;
+    }
+
+    ostream& ostream::operator<<(boost::string_ref x) {
+        write_utf8(base, x);
+        return *this;
+    }
+
+    ostream& ostream::operator<<(int x) {
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(unsigned int x) {
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(long x) {
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(unsigned long x) {
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(fs::path const& x) {
+        base << path_to_stream(x);
+        return *this;
+    }
+
+    ostream& ostream::operator<<(base_ostream& (*x)(base_ostream&)) {
+        base << x;
+        return *this;
+    }
+
+    ostream& ostream::operator<<(base_ios& (*x)(base_ios&)) {
+        base << x;
+        return *this;
     }
 }}
